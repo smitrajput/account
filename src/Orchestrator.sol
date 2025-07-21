@@ -295,10 +295,9 @@ contract Orchestrator is
         if (
             LibBit.or(
                 i.prePaymentAmount > i.prePaymentMaxAmount,
-                LibBit.or(
-                    i.prePaymentMaxAmount > i.totalPaymentMaxAmount,
-                    i.totalPaymentAmount > i.totalPaymentMaxAmount
-                )
+                i.totalPaymentAmount > i.totalPaymentMaxAmount,
+                i.prePaymentMaxAmount > i.totalPaymentMaxAmount,
+                i.prePaymentAmount > i.totalPaymentAmount
             )
         ) {
             err = PaymentError.selector;
@@ -898,7 +897,7 @@ contract Orchestrator is
         returns (string memory name, string memory version)
     {
         name = "Orchestrator";
-        version = "0.4.4";
+        version = "0.4.5";
     }
 
     ////////////////////////////////////////////////////////////////////////
