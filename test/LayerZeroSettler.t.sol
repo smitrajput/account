@@ -15,6 +15,9 @@ import {
     MessagingFee
 } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 import {SendLibMock} from "./mocks/SendLibMock.sol";
+import {EnforcedOptionParam} from
+    "@layerzerolabs/oapp-evm/contracts/oapp/interfaces/IOAppOptionsType3.sol";
+import {UlnOptionsTestHelper} from "./helpers/UlnOptionsTestHelper.sol";
 
 contract LayerZeroSettlerTest is Test {
     SendLibMock public sendLib;
@@ -602,5 +605,154 @@ contract LayerZeroSettlerTest is Test {
             );
             assertTrue(settlerC.read(settlementId, orchestrator, block.chainid));
         }
+    }
+
+    function test_setEnforcedOptions_basic() public {
+        // Create basic default options
+        // Type 3 options format: 0x0003 + encoded options
+        // Simple executor option: option type (1 byte) + gas (16 bytes) + value (16 bytes)
+        bytes memory enforcedOption = hex"0003" // Type 3 options
+            hex"01" // Executor option type
+            hex"00000000000000000000000000030d40" // 200000 gas
+            hex"00000000000000000000000000000000"; // 0 value
+
+        // Create enforced options params for EID_B with message type 1
+        EnforcedOptionParam[] memory params = new EnforcedOptionParam[](1);
+        params[0] = EnforcedOptionParam({eid: EID_B, msgType: 1, options: enforcedOption});
+
+        // Only owner can set enforced options
+        vm.prank(owner);
+        settlerA.setEnforcedOptions(params);
+
+        // Verify the options were set
+        bytes memory storedOptions = settlerA.enforcedOptions(EID_B, 1);
+        assertEq(storedOptions, enforcedOption);
+
+        // Test that non-owner cannot set enforced options
+        vm.prank(makeAddr("notOwner"));
+        vm.expectRevert(abi.encodeWithSelector(0x118cdaa7, makeAddr("notOwner"))); // OwnableUnauthorizedAccount
+        settlerA.setEnforcedOptions(params);
+    }
+
+    function test_setEnforcedOptions_multipleEndpoints() public {
+        // Create different enforced options for different endpoints
+        bytes memory optionForB = hex"0003" // Type 3
+            hex"01" // Executor option type
+            hex"000000000000000000000000000249f0" // 150000 gas
+            hex"00000000000000000000000000000000"; // 0 value
+
+        bytes memory optionForC = hex"0003" // Type 3
+            hex"01" // Executor option type
+            hex"0000000000000000000000000003d090" // 250000 gas
+            hex"0000000000000000000de0b6b3a7640000"; // 1 ether value
+
+        // Create enforced options params for multiple endpoints
+        EnforcedOptionParam[] memory params = new EnforcedOptionParam[](2);
+        params[0] = EnforcedOptionParam({eid: EID_B, msgType: 1, options: optionForB});
+        params[1] = EnforcedOptionParam({eid: EID_C, msgType: 1, options: optionForC});
+
+        // Set enforced options
+        vm.prank(owner);
+        settlerA.setEnforcedOptions(params);
+
+        // Verify both options were set correctly
+        assertEq(settlerA.enforcedOptions(EID_B, 1), optionForB);
+        assertEq(settlerA.enforcedOptions(EID_C, 1), optionForC);
+    }
+
+    function test_combineOptions_withEnforcedOptions() public {
+        // Set enforced options first
+        bytes memory enforcedOption = hex"0003" // Type 3
+            hex"01" // Executor option type
+            hex"00000000000000000000000000030d40" // 200000 gas
+            hex"00000000000000000006f05b59d3b20000"; // 0.5 ether
+
+        EnforcedOptionParam[] memory params = new EnforcedOptionParam[](1);
+        params[0] = EnforcedOptionParam({eid: EID_B, msgType: 1, options: enforcedOption});
+
+        vm.prank(owner);
+        settlerA.setEnforcedOptions(params);
+
+        // Test combining with extra options
+        bytes memory extraOption = hex"0003" // Type 3
+            hex"01" // Executor option type
+            hex"000000000000000000000000000186a0" // 100000 gas
+            hex"0000000000000000000429d069189e0000"; // 0.3 ether
+
+        // The combined options should include both enforced and extra options
+        bytes memory combinedOptions = settlerA.combineOptions(EID_B, 1, extraOption);
+
+        // Combined options should start with enforced options, followed by extra options (without type prefix)
+        // We need to remove the first 2 bytes (0x0003) from extraOption manually
+        bytes memory extraOptionWithoutType = new bytes(extraOption.length - 2);
+        for (uint256 i = 2; i < extraOption.length; i++) {
+            extraOptionWithoutType[i - 2] = extraOption[i];
+        }
+        bytes memory expectedCombined = bytes.concat(enforcedOption, extraOptionWithoutType);
+        assertEq(combinedOptions, expectedCombined);
+
+        // Test with empty extra options - should return just enforced options
+        bytes memory onlyEnforced = settlerA.combineOptions(EID_B, 1, "");
+        assertEq(onlyEnforced, enforcedOption);
+
+        // Test with no enforced options set - should return extra options
+        bytes memory onlyExtra = settlerA.combineOptions(EID_C, 2, extraOption);
+        assertEq(onlyExtra, extraOption);
+    }
+
+    function test_minimalType3Options() public {
+        // Test that minimal Type 3 options (just the header) work correctly
+        // First, let's verify our options format directly
+        bytes memory minimalOptions = hex"0003";
+        bytes memory emptyOptions = "";
+
+        // Import and deploy the UlnOptions test helper
+        UlnOptionsTestHelper helper = new UlnOptionsTestHelper();
+
+        // Test 1: Empty options should revert with LZ_ULN_InvalidWorkerOptions(0)
+        vm.expectRevert(
+            abi.encodeWithSelector(UlnOptionsTestHelper.LZ_ULN_InvalidWorkerOptions.selector, 0)
+        );
+        helper.decodeOptions(emptyOptions);
+
+        // Test 2: Minimal options (just type 3 header) should work
+        (uint16 optionType, bool hasWorkerOptions) = helper.decodeOptions(minimalOptions);
+        assertEq(optionType, 3, "Option type should be 3");
+        assertFalse(hasWorkerOptions, "Should have no worker options");
+
+        // Test 3: Now test the actual LayerZeroSettler flow
+        bytes32 settlementId = keccak256("test-minimal-options");
+        uint32[] memory endpointIds = new uint32[](1);
+        endpointIds[0] = EID_B;
+        bytes memory settlerContext = abi.encode(endpointIds);
+
+        // Authorize the settlement
+        vm.prank(orchestrator);
+        settlerA.send(settlementId, settlerContext);
+
+        // Get the fee quote - this internally uses the minimal hex"0003" options
+        uint256 fee = _quoteFeeForEndpoints(settlerA, endpointIds);
+
+        // Execute send - this should work without LZ_ULN_InvalidWorkerOptions error
+        vm.deal(orchestrator, fee);
+        vm.prank(orchestrator);
+        settlerA.executeSend{value: fee}(orchestrator, settlementId, settlerContext);
+
+        // Verify message was sent
+        assertEq(sendLib.getPacketCount(), 1);
+
+        // Deliver the message
+        _deliverCrossChainMessage(
+            EID_A,
+            EID_B,
+            address(settlerA),
+            payable(address(settlerB)),
+            settlementId,
+            orchestrator,
+            block.chainid
+        );
+
+        // Verify settlement was recorded
+        assertTrue(settlerB.read(settlementId, orchestrator, block.chainid));
     }
 }

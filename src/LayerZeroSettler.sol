@@ -2,6 +2,7 @@
 pragma solidity ^0.8.23;
 
 import {OApp, MessagingFee, Origin} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
+import {OAppOptionsType3} from "@layerzerolabs/oapp-evm/contracts/oapp/libs/OAppOptionsType3.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ISettler} from "./interfaces/ISettler.sol";
 import {TokenTransferLib} from "./libraries/TokenTransferLib.sol";
@@ -9,7 +10,7 @@ import {TokenTransferLib} from "./libraries/TokenTransferLib.sol";
 /// @title LayerZeroSettler
 /// @notice Cross-chain settlement using LayerZero v2 with self-execution model
 /// @dev Uses msg.value to pay for cross-chain messaging fees
-contract LayerZeroSettler is OApp, ISettler {
+contract LayerZeroSettler is OApp, OAppOptionsType3, ISettler {
     event Settled(address indexed sender, bytes32 indexed settlementId, uint256 senderChainId);
 
     error InvalidEndpointId();
@@ -72,7 +73,9 @@ contract LayerZeroSettler is OApp, ISettler {
         uint32[] memory endpointIds = abi.decode(settlerContext, (uint32[]));
 
         bytes memory payload = abi.encode(settlementId, sender, block.chainid);
-        bytes memory options = ""; // No executor options for self-execution
+
+        // Type 3 options with minimal executor configuration for self-execution
+        bytes memory options = hex"0003";
 
         // If the fee sent as msg.value is incorrect, then one of these _lzSends will revert.
         for (uint256 i = 0; i < endpointIds.length; i++) {
@@ -131,4 +134,15 @@ contract LayerZeroSettler is OApp, ISettler {
 
     /// @notice Allow contract to receive ETH from refunds
     receive() external payable {}
+
+    // ========================================================
+    // ULN302 Executor Functions
+    // ========================================================
+    function assignJob(uint32, address, uint256, bytes calldata) external returns (uint256) {
+        return 0;
+    }
+
+    function getFee(uint32, address, uint256, bytes calldata) external view returns (uint256) {
+        return 0;
+    }
 }
