@@ -629,9 +629,9 @@ contract IthacaAccount is IIthacaAccount, EIP712, GuardedExecutor {
             keyHash = k;
 
             // If this is a simulation, signature validation errors are skipped.
-            /// @dev to simulate a paymaster, state override the balance of the msg.sender
-            /// to type(uint256).max. In this case, the msg.sender is the ORCHESTRATOR.
-            if (address(ORCHESTRATOR).balance == type(uint256).max) {
+            /// @dev to simulate a paymaster, state override the balance of the relayer
+            /// to uint256(type(uint192).max).
+            if (tx.origin.balance >= type(uint192).max) {
                 isValid = true;
             }
 
@@ -733,6 +733,6 @@ contract IthacaAccount is IIthacaAccount, EIP712, GuardedExecutor {
         returns (string memory name, string memory version)
     {
         name = "IthacaAccount";
-        version = "0.4.10";
+        version = "0.4.11";
     }
 }
