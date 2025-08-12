@@ -13,6 +13,7 @@ import {LibStorage} from "solady/utils/LibStorage.sol";
 import {CallContextChecker} from "solady/utils/CallContextChecker.sol";
 import {FixedPointMathLib as Math} from "solady/utils/FixedPointMathLib.sol";
 import {TokenTransferLib} from "./libraries/TokenTransferLib.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {IIthacaAccount} from "./interfaces/IIthacaAccount.sol";
 import {IOrchestrator} from "./interfaces/IOrchestrator.sol";
 import {ICommon} from "./interfaces/ICommon.sol";
@@ -94,12 +95,6 @@ contract Orchestrator is
 
     /// @dev The state override has not happened.
     error StateOverrideError();
-
-    /// @dev The funding has failed.
-    error FundingError();
-
-    /// @dev The encoded fund transfers are not striclty increasing.
-    error InvalidTransferOrder();
 
     /// @dev The intent has expired.
     error IntentExpired();
@@ -214,7 +209,7 @@ contract Orchestrator is
     /// But the codepaths for signature verification are still hit, for correct gas measurement.
     /// @dev If `isStateOverride` is false, then this function will always revert. If the simulation is successful, then it reverts with `SimulationPassed` error.
     /// If `isStateOverride` is true, then this function will not revert if the simulation is successful.
-    /// But the balance of tx.origin has to be greater than type(uint192).max, to prove that a state override has been made offchain,
+    /// But the balance of tx.origin has to be greater than or equal to type(uint192).max, to prove that a state override has been made offchain,
     /// and this is not an onchain call. This mode has been added so that receipt logs can be generated for `eth_simulateV1`
     /// @return gasUsed The amount of gas used by the execution. (Only returned if `isStateOverride` is true)
     function simulateExecute(
@@ -686,28 +681,21 @@ contract Orchestrator is
 
         Transfer[] memory transfers = new Transfer[](encodedFundTransfers.length);
 
-        uint256[] memory preBalances = new uint256[](encodedFundTransfers.length);
-        address lastToken;
         for (uint256 i; i < encodedFundTransfers.length; ++i) {
             transfers[i] = abi.decode(encodedFundTransfers[i], (Transfer));
-            address tokenAddr = transfers[i].token;
-
-            // Ensure strictly ascending order by token address without duplicates.
-            if (i != 0 && tokenAddr <= lastToken) revert InvalidTransferOrder();
-
-            lastToken = tokenAddr;
-            preBalances[i] = TokenTransferLib.balanceOf(tokenAddr, eoa);
         }
 
-        IFunder(funder).fund(eoa, digest, transfers, funderSignature);
+        IFunder(funder).fund(digest, transfers, funderSignature);
 
-        for (uint256 i; i < encodedFundTransfers.length; ++i) {
-            if (
-                TokenTransferLib.balanceOf(transfers[i].token, eoa) - preBalances[i]
-                    < transfers[i].amount
-            ) {
-                revert FundingError();
-            }
+        uint256 j;
+
+        if (transfers[0].token == address(0)) {
+            SafeTransferLib.safeTransferETH(eoa, transfers[0].amount);
+            j++;
+        }
+
+        for (j; j < transfers.length; ++j) {
+            SafeTransferLib.safeTransferFrom(transfers[j].token, funder, eoa, transfers[j].amount);
         }
     }
 
@@ -897,7 +885,7 @@ contract Orchestrator is
         returns (string memory name, string memory version)
     {
         name = "Orchestrator";
-        version = "0.4.6";
+        version = "0.4.7";
     }
 
     ////////////////////////////////////////////////////////////////////////

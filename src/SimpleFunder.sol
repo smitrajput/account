@@ -6,6 +6,7 @@ import {ICommon} from "./interfaces/ICommon.sol";
 import {SignatureCheckerLib} from "solady/utils/SignatureCheckerLib.sol";
 import {Ownable} from "solady/auth/Ownable.sol";
 import {TokenTransferLib} from "./libraries/TokenTransferLib.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {EIP712} from "solady/utils/EIP712.sol";
 
 /// @title SimpleFunder
@@ -57,7 +58,7 @@ contract SimpleFunder is EIP712, Ownable, IFunder {
         returns (string memory name, string memory version)
     {
         name = "SimpleFunder";
-        version = "0.1.2";
+        version = "0.1.3";
     }
 
     ////////////////////////////////////////////////////////////////////////
@@ -117,12 +118,9 @@ contract SimpleFunder is EIP712, Ownable, IFunder {
 
     /// @dev Allows the orchestrator to fund an account.
     /// The `digest` includes the intent nonce and the transfers.
-    function fund(
-        address account,
-        bytes32 digest,
-        ICommon.Transfer[] memory transfers,
-        bytes memory funderSignature
-    ) external {
+    function fund(bytes32 digest, ICommon.Transfer[] memory transfers, bytes memory funderSignature)
+        external
+    {
         if (msg.sender != ORCHESTRATOR) {
             revert OnlyOrchestrator();
         }
@@ -139,8 +137,37 @@ contract SimpleFunder is EIP712, Ownable, IFunder {
             revert InvalidFunderSignature();
         }
 
-        for (uint256 i; i < transfers.length; ++i) {
-            TokenTransferLib.safeTransfer(transfers[i].token, account, transfers[i].amount);
+        uint256 i = 0;
+        if (transfers[0].token == address(0)) {
+            // Since we know the orchestrator implements a clean `Receive()` we don't need to check if the call was successful.
+            (bool success,) = ORCHESTRATOR.call{value: transfers[0].amount}("");
+            (success);
+            i++;
+        }
+
+        address orchestrator = ORCHESTRATOR;
+        for (i; i < transfers.length; ++i) {
+            address token = transfers[i].token;
+            uint256 amount = transfers[i].amount;
+            // We check if the token has already been approved to the orchestrator. If not, do a max approval.
+            assembly ("memory-safe") {
+                let m := mload(0x40)
+                mstore(m, 0xdd62ed3e) // `allowance(address,address)`.
+                mstore(add(m, 0x20), address())
+                mstore(add(m, 0x40), orchestrator)
+                mstore(0, 0)
+                // Orchestrator checks for token transfer success, so we don't need to check it here.
+                pop(call(gas(), token, 0, add(m, 0x1c), 0x44, 0x00, 0x20))
+
+                let allowance := mload(0x00)
+                if gt(amount, allowance) {
+                    mstore(m, 0x095ea7b3) // `approve(address,uint256)`.
+                    mstore(add(m, 0x20), orchestrator)
+                    mstore(add(m, 0x40), 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF) // type(uint256).max
+                    // Orchestrator checks for token transfer success, so we don't need to check it here.
+                    pop(call(gas(), token, 0, add(m, 0x1c), 0x44, 0x00, 0x00))
+                }
+            }
         }
     }
 
