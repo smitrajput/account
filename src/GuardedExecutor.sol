@@ -26,6 +26,7 @@ import {ICallChecker} from "./interfaces/ICallChecker.sol";
 ///   a key cannot spend tokens (ERC20s and native) until spend permissions have been added.
 /// - When a spend permission is removed and re-added, its spent amount will be reset.
 abstract contract GuardedExecutor is ERC7821 {
+    using LibBytes for *;
     using DynamicArrayLib for *;
     using EnumerableSetLib for *;
     using EnumerableMapLib for *;
@@ -258,15 +259,25 @@ abstract contract GuardedExecutor is ERC7821 {
                 t.erc20s.p(target);
                 t.transferAmounts.p(LibBytes.loadCalldata(data, 0x24)); // `amount`.
             }
+            // `transferFrom(address,address,uint256)`.
+            // The account may have existing ERC20 allowances. If `transferFrom` is used
+            // to transfer to an account that is not `address(this)`, treat it as outflow.
+            if (fnSel == 0x23b872dd) {
+                // `transferFrom(address from, address to, uint256 amount)`.
+                if (LibBytes.loadCalldata(data, 0x24).lsbToAddress() == address(this)) continue;
+                if (LibBytes.loadCalldata(data, 0x44) == 0) continue; // `amount == 0`.
+                t.erc20s.p(target);
+                t.transferAmounts.p(LibBytes.loadCalldata(data, 0x44)); // `amount`.
+            }
             // `approve(address,uint256)`.
             // We have to revoke any new approvals after the batch, else a bad app can
             // leave an approval to let them drain unlimited tokens after the batch.
             if (fnSel == 0x095ea7b3) {
                 if (LibBytes.loadCalldata(data, 0x24) == 0) continue; // `amount == 0`.
                 t.approvedERC20s.p(target);
-                t.approvalSpenders.p(LibBytes.loadCalldata(data, 0x04)); // `spender`.
+                t.approvalSpenders.p(LibBytes.loadCalldata(data, 0x04).lsbToAddress()); // `spender`.
                 t.erc20s.p(target); // `token`.
-                t.transferAmounts.p(uint256(0));
+                t.transferAmounts.p(LibBytes.loadCalldata(data, 0x24)); // `amount`.
             }
             // The only Permit2 method that requires `msg.sender` to approve.
             // `approve(address,address,uint160,uint48)`.
@@ -275,10 +286,10 @@ abstract contract GuardedExecutor is ERC7821 {
             if (fnSel == 0x87517c45) {
                 if (target != _PERMIT2) continue;
                 if (LibBytes.loadCalldata(data, 0x44) == 0) continue; // `amount == 0`.
-                t.permit2ERC20s.p(LibBytes.loadCalldata(data, 0x04)); // `token`.
-                t.permit2Spenders.p(LibBytes.loadCalldata(data, 0x24)); // `spender`.
-                t.erc20s.p(LibBytes.loadCalldata(data, 0x04)); // `token`.
-                t.transferAmounts.p(uint256(0));
+                t.permit2ERC20s.p(LibBytes.loadCalldata(data, 0x04).lsbToAddress()); // `token`.
+                t.permit2Spenders.p(LibBytes.loadCalldata(data, 0x24).lsbToAddress()); // `spender`.
+                t.erc20s.p(LibBytes.loadCalldata(data, 0x04).lsbToAddress()); // `token`.
+                t.transferAmounts.p(LibBytes.loadCalldata(data, 0x44)); // `amount`.
             }
         }
 
