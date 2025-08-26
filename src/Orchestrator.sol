@@ -249,14 +249,21 @@ contract Orchestrator is
     {
         // This function does NOT allocate memory to avoid quadratic memory expansion costs.
         // Otherwise, it will be unfair to the Intents at the back of the batch.
+
+        // `dynamicStructInCalldata` internally performs out-of-bounds checks.
+        bytes calldata intentCalldata = LibBytes.dynamicStructInCalldata(encodedIntent, 0x00);
         assembly ("memory-safe") {
-            let t := calldataload(encodedIntent.offset)
-            i := add(t, encodedIntent.offset)
-            // Bounds check. We don't need to explicitly check the fields here.
-            // In the self call functions, we will use regular Solidity to access the
-            // dynamic fields like `signature`, which generate the implicit bounds checks.
-            if or(shr(64, t), lt(encodedIntent.length, 0x20)) { revert(0x00, 0x00) }
+            i := intentCalldata.offset
         }
+        // These checks are included for more safety: Swiss Cheese Model.
+        // Ensures that all the dynamic children in `encodedIntent` are contained.
+        LibBytes.checkInCalldata(i.executionData, intentCalldata);
+        LibBytes.checkInCalldata(i.encodedPreCalls, intentCalldata);
+        LibBytes.checkInCalldata(i.encodedFundTransfers, intentCalldata);
+        LibBytes.checkInCalldata(i.funderSignature, intentCalldata);
+        LibBytes.checkInCalldata(i.settlerContext, intentCalldata);
+        LibBytes.checkInCalldata(i.signature, intentCalldata);
+        LibBytes.checkInCalldata(i.paymentSignature, intentCalldata);
     }
     /// @dev Extracts the PreCall from the calldata bytes, with minimal checks.
 
@@ -265,9 +272,11 @@ contract Orchestrator is
         virtual
         returns (SignedCall calldata p)
     {
-        Intent calldata i = _extractIntent(encodedPreCall);
         assembly ("memory-safe") {
-            p := i
+            // We can skip the offset checks here, since precalls are only accessed within the verify self-call.
+            // By that time, we already know that the intent struct is well formed.
+            let t := calldataload(encodedPreCall.offset)
+            p := add(t, encodedPreCall.offset)
         }
     }
 
@@ -802,7 +811,7 @@ contract Orchestrator is
         returns (string memory name, string memory version)
     {
         name = "Orchestrator";
-        version = "0.5.0";
+        version = "0.5.1";
     }
 
     ////////////////////////////////////////////////////////////////////////
